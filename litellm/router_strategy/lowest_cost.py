@@ -49,10 +49,12 @@ class LowestCostLoggingHandler(CustomLogger):
                     }
                 }
                 """
-                current_date = datetime.now().strftime("%Y-%m-%d")
-                current_hour = datetime.now().strftime("%H")
-                current_minute = datetime.now().strftime("%M")
+                now = datetime.now()
+                current_date = now.strftime("%Y-%m-%d")
+                current_hour = now.strftime("%H")
+                current_minute = now.strftime("%M")
                 precise_minute = f"{current_date}-{current_hour}-{current_minute}"
+                precise_5s = f"{now.strftime('%Y-%m-%d-%H-%M')}-{(now.second // 5) * 5}"
                 cost_key = f"{model_group}_map"
 
                 response_ms: timedelta = end_time - start_time
@@ -77,15 +79,23 @@ class LowestCostLoggingHandler(CustomLogger):
                 if id not in request_count_dict:
                     request_count_dict[id] = {}
 
+                if precise_5s not in request_count_dict[id]:
+                    request_count_dict[id][precise_5s] = {}
                 if precise_minute not in request_count_dict[id]:
                     request_count_dict[id][precise_minute] = {}
 
                 ## TPM
+                request_count_dict[id][precise_5s]["tpm"] = (
+                    request_count_dict[id][precise_5s].get("tpm", 0) + total_tokens
+                )
                 request_count_dict[id][precise_minute]["tpm"] = (
                     request_count_dict[id][precise_minute].get("tpm", 0) + total_tokens
                 )
 
                 ## RPM
+                request_count_dict[id][precise_5s]["rpm"] = (
+                    request_count_dict[id][precise_5s].get("rpm", 0) + 1
+                )
                 request_count_dict[id][precise_minute]["rpm"] = (
                     request_count_dict[id][precise_minute].get("rpm", 0) + 1
                 )
@@ -136,10 +146,9 @@ class LowestCostLoggingHandler(CustomLogger):
                 """
                 cost_key = f"{model_group}_map"
 
-                current_date = datetime.now().strftime("%Y-%m-%d")
-                current_hour = datetime.now().strftime("%H")
-                current_minute = datetime.now().strftime("%M")
-                precise_minute = f"{current_date}-{current_hour}-{current_minute}"
+                now = datetime.now()
+                precise_minute = f"{now.strftime('%Y-%m-%d-%H-%M')}"
+                precise_5s = f"{now.strftime('%Y-%m-%d-%H-%M')}-{(now.second // 5) * 5}"
 
                 response_ms: timedelta = end_time - start_time
 
@@ -163,15 +172,23 @@ class LowestCostLoggingHandler(CustomLogger):
 
                 if id not in request_count_dict:
                     request_count_dict[id] = {}
+                if precise_5s not in request_count_dict[id]:
+                    request_count_dict[id][precise_5s] = {}
                 if precise_minute not in request_count_dict[id]:
                     request_count_dict[id][precise_minute] = {}
 
                 ## TPM
+                request_count_dict[id][precise_5s]["tpm"] = (
+                    request_count_dict[id][precise_5s].get("tpm", 0) + total_tokens
+                )
                 request_count_dict[id][precise_minute]["tpm"] = (
                     request_count_dict[id][precise_minute].get("tpm", 0) + total_tokens
                 )
 
                 ## RPM
+                request_count_dict[id][precise_5s]["rpm"] = (
+                    request_count_dict[id][precise_5s].get("rpm", 0) + 1
+                )
                 request_count_dict[id][precise_minute]["rpm"] = (
                     request_count_dict[id][precise_minute].get("rpm", 0) + 1
                 )
@@ -211,10 +228,23 @@ class LowestCostLoggingHandler(CustomLogger):
         # ----------------------
         float("inf")
 
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        current_hour = datetime.now().strftime("%H")
-        current_minute = datetime.now().strftime("%M")
-        precise_minute = f"{current_date}-{current_hour}-{current_minute}"
+        now = datetime.now()
+
+        # 1-minute window
+        precise_minute = f"{now.strftime('%Y-%m-%d-%H-%M')}"
+        prev_min_dt = now - timedelta(minutes=1)
+        precise_minute_prev = f"{prev_min_dt.strftime('%Y-%m-%d-%H-%M')}"
+        time_into_min = now.second + (now.microsecond / 1000000.0)
+        weight_min = (60.0 - time_into_min) / 60.0
+
+        # 5-second window
+        precise_5s = f"{now.strftime('%Y-%m-%d-%H-%M')}-{(now.second // 5) * 5}"
+        prev_5s_dt = now - timedelta(seconds=5)
+        precise_5s_prev = (
+            f"{prev_5s_dt.strftime('%Y-%m-%d-%H-%M')}-{(prev_5s_dt.second // 5) * 5}"
+        )
+        time_into_5s = (now.second % 5) + (now.microsecond / 1000000.0)
+        weight_5s = (5.0 - time_into_5s) / 5.0
 
         if request_count_dict is None:  # base case
             return
@@ -224,6 +254,7 @@ class LowestCostLoggingHandler(CustomLogger):
             ## if healthy deployment not yet used
             if d["model_info"]["id"] not in all_deployments:
                 all_deployments[d["model_info"]["id"]] = {
+                    precise_5s: {"tpm": 0, "rpm": 0},
                     precise_minute: {"tpm": 0, "rpm": 0},
                 }
 
@@ -293,11 +324,41 @@ class LowestCostLoggingHandler(CustomLogger):
 
             item_cost = item_input_cost + item_output_cost
 
-            item_rpm = item_map.get(precise_minute, {}).get("rpm", 0)
-            item_tpm = item_map.get(precise_minute, {}).get("tpm", 0)
+            # Calculate metrics using 5 second sliding window approximation
+            curr_rpm_5s = item_map.get(precise_5s, {}).get("rpm", 0)
+            prev_rpm_5s = item_map.get(precise_5s_prev, {}).get("rpm", 0)
+            item_rpm = curr_rpm_5s + prev_rpm_5s * weight_5s
+
+            curr_tpm_5s = item_map.get(precise_5s, {}).get("tpm", 0)
+            prev_tpm_5s = item_map.get(precise_5s_prev, {}).get("tpm", 0)
+            item_tpm = curr_tpm_5s + prev_tpm_5s * weight_5s
+
+            # Calculate metrics using 1 minute sliding window approximation
+            curr_rpm_min = item_map.get(precise_minute, {}).get("rpm", 0)
+            prev_rpm_min = item_map.get(precise_minute_prev, {}).get("rpm", 0)
+            item_rpm_minute = curr_rpm_min + prev_rpm_min * weight_min
+
+            curr_tpm_min = item_map.get(precise_minute, {}).get("tpm", 0)
+            prev_tpm_min = item_map.get(precise_minute_prev, {}).get("tpm", 0)
+            item_tpm_minute = curr_tpm_min + prev_tpm_min * weight_min
+
+            # Get 5-second limits: use rp5s / tp5s if provided, else fallback to rpm/tpm divided by 12 (since 60s / 5s = 12 buckets)
+            _deployment_rp5s = (
+                _deployment.get("rp5s", None)
+                or _deployment.get("litellm_params", {}).get("rp5s", None)
+                or _deployment.get("model_info", {}).get("rp5s", None)
+                or (_deployment_rpm / 12.0)
+            )
+
+            _deployment_tp5s = (
+                _deployment.get("tp5s", None)
+                or _deployment.get("litellm_params", {}).get("tp5s", None)
+                or _deployment.get("model_info", {}).get("tp5s", None)
+                or (_deployment_tpm / 12.0)
+            )
 
             verbose_router_logger.debug(
-                f"item_cost: {item_cost}, item_tpm: {item_tpm}, item_rpm: {item_rpm}, model_id: {_deployment.get('model_info', {}).get('id')}"
+                f"item_cost: {item_cost}, item_tpm_5s: {item_tpm}, item_rpm_5s: {item_rpm}, model_id: {_deployment.get('model_info', {}).get('id')}"
             )
 
             # -------------- #
@@ -315,9 +376,11 @@ class LowestCostLoggingHandler(CustomLogger):
             # -------------- #
 
             if (
-                item_tpm + input_tokens > _deployment_tpm
-                or item_rpm + 1 > _deployment_rpm
-            ):  # if user passed in tpm / rpm in the model_list
+                item_tpm + input_tokens > _deployment_tp5s
+                or item_rpm + 1 > _deployment_rp5s
+                or item_tpm_minute + input_tokens > _deployment_tpm
+                or item_rpm_minute + 1 > _deployment_rpm
+            ):  # if user passed in limits in the model_list
                 continue
             else:
                 potential_deployments.append((_deployment, item_cost))

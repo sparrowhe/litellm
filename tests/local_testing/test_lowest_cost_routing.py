@@ -178,12 +178,12 @@ async def test_get_available_endpoints_tpm_rpm_check_async(ans_rpm):
         {
             "model_name": "gpt-3.5-turbo",
             "litellm_params": {"model": "gpt-4"},
-            "model_info": {"id": "1234", "rpm": ans_rpm},
+            "model_info": {"id": "1234", "rpm": ans_rpm, "rp5s": ans_rpm},
         },
         {
             "model_name": "gpt-3.5-turbo",
             "litellm_params": {"model": "groq/llama-3.1-8b-instant"},
-            "model_info": {"id": "5678", "rpm": non_ans_rpm},
+            "model_info": {"id": "5678", "rpm": non_ans_rpm, "rp5s": non_ans_rpm},
         },
     ]
     lowest_cost_logger = LowestCostLoggingHandler(router_cache=test_cache)
